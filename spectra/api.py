@@ -122,6 +122,47 @@ class Spectra:
         except ElementNotFound:
             return False
 
+    def heal(self, selector: str, hint: Optional[Element] = None) -> "Healed":
+        """Find what a broken selector was aiming at and rebuild it.
+
+        ``hint`` is an element you already hold (the one that was selected). It
+        breaks a tie. Raises ElementNotFound when nothing is close enough to
+        trust.
+        """
+        node = hint.node if hint is not None else None
+        hit = self.driver.call(lambda: self.service.engine.heal(selector, hint=node))
+        if hit is None:
+            raise ElementNotFound(f"could not heal {selector!r}")
+        return Healed(Element(self, hit.node), hit.selector, hit.confidence, hit.why)
+
+    def recording(self) -> "Recording":
+        """Start a script. ``recording.click(element)`` stores the selector the generator would write."""
+        from .core.script import Recording
+
+        def generate(node):
+            return self.driver.call(lambda: self.service.engine.generate(node)[0].to_text())
+
+        return Recording(generate)
+
+
+def grade_selector(selector: str):
+    """Grade a selector without starting Spectra. See :class:`spectra.core.resilience.Grade`."""
+    from .core.resilience import grade
+    return grade(selector)
+
+
+class Healed:
+    """The element a broken selector was rebuilt to point at."""
+
+    def __init__(self, element: Element, selector: str, confidence: float, why: str):
+        self.element = element
+        self.selector = selector
+        self.confidence = confidence
+        self.why = why
+
+    def __repr__(self):
+        return f"Healed({self.selector!r}, {self.confidence:.0%})"
+
 
 # ------------------------------------------------------------------ input helpers (Windows)
 

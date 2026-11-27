@@ -21,7 +21,10 @@ class UiBridge(QObject):
         fn()
 
     def post(self, fn):
-        self._sig.emit(fn)
+        try:
+            self._sig.emit(fn)
+        except RuntimeError:
+            pass  # the window was already closed
 
     def wrap(self, fn):
         """Return a function that, called from any thread, runs fn(*args) on the GUI thread."""

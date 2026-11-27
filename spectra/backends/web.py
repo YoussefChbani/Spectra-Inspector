@@ -20,6 +20,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from ..core.node import Backend, Node, Rect
+from ..core.resilience import looks_dynamic, looks_positional
 from .cdp import CdpConnection, CdpError, list_targets, port_open, probe
 
 TEST_ID_ATTRS = ("data-testid", "data-test-id", "data-test", "data-qa", "data-cy", "data-automation-id")
@@ -28,13 +29,8 @@ PREFERRED_ATTRS = TEST_ID_ATTRS + ("id", "name", "aria-label", "placeholder", "t
 TEXT_ROLES = {"a", "button", "label", "span", "li", "td", "th", "h1", "h2", "h3", "h4", "h5", "h6",
               "option", "p", "summary", "legend", "strong", "b", "em", "div", "dt", "dd", "caption"}
 SKIP_TEXT = {"script", "style", "noscript", "template", "head"}
-_DYNAMIC_ID = re.compile(r"\d{4,}|^:|:$|^[0-9a-f]{8,}$|^(ember|react|mui-|radix-|headlessui-|rc_|__next)", re.I)
 
 ScreenMapper = Callable[["WebPage"], Optional[Tuple[float, float, float]]]
-
-
-def looks_dynamic(value: str) -> bool:
-    return bool(_DYNAMIC_ID.search(value or ""))
 
 
 class Endpoint:
@@ -370,6 +366,8 @@ class WebDomNode(Node):
         self._parent = parent
         self._attrs: Optional[dict] = None
         self._text: Optional[str] = None
+        self._rect_known = False
+        self._rect_cache = None
 
     def key(self):
         return ("el", self.page.endpoint.port, self.page.target_id, self.bid)
@@ -442,7 +440,8 @@ class WebDomNode(Node):
         for k in TEST_ID_ATTRS:
             if a.get(k):
                 return [k]
-        if a.get("id") and not looks_dynamic(a["id"]):
+        # ok1 / item-2 follow position. The visible name, then an anchor, survives a reorder.
+        if a.get("id") and not looks_dynamic(a["id"]) and not looks_positional(a["id"]):
             return ["id"]
         out = []
         for k in ("name", "aria-label", "placeholder", "title", "alt", "for"):
@@ -500,7 +499,12 @@ class WebDomNode(Node):
         return self._parent if self._parent is not None else self.page.tab_node
 
     def rect(self):
-        return self.page.css_to_screen(self.page.css_box(self.bid))
+        # Box model calls are cross-process. Anchors ask for the same rectangle many times.
+        if not self._rect_known:
+            box = self.page.css_box(self.bid)
+            self._rect_cache = self.page.css_to_screen(box) if box else None
+            self._rect_known = True
+        return self._rect_cache
 
     def in_shadow_or_frame(self) -> bool:
         node = self

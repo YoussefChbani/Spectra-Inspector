@@ -206,7 +206,8 @@ class MainWindow(QMainWindow):
         sl.addLayout(row)
         self.sel_text = QPlainTextEdit()
         self.sel_text.setFont(mono)
-        self.sel_text.setPlaceholderText('uia:Window[process="notepad.exe"] >> Edit[automationid="15"]')
+        self.sel_text.setPlaceholderText(
+            'uia:Window[process="notepad.exe"] >> Text[name="Email"] /below/ Edit')
         self._hl = SelectorHighlighter(self.sel_text.document())
         self.sel_text.textChanged.connect(self._on_text_edited)
         sl.addWidget(self.sel_text)
@@ -603,21 +604,30 @@ class MainWindow(QMainWindow):
             if seq != self._select_seq:
                 return
             sel, res, code = r
-            inc = sel.included or []
-            for i, st in enumerate(self.steps):
-                st.include = i in inc
-            for pos, idx in enumerate(inc):
-                if idx >= len(self.steps) or pos >= len(sel.steps):
-                    continue
-                gst, m = sel.steps[pos], self.steps[idx]
-                m.checked = {f.name for f in gst.filters}
-                for f in gst.filters:
-                    m.ops[f.name] = f.op or "="
-                    m.values[f.name] = f.value
-                m.nth = gst.nth
-                m.use_role = gst.role != "*"
-            self._render_steps(select=len(self.steps) - 1)
-            self._render_selector(validate=False)
+            # A relative selector names a landmark that is not an ancestor, so the
+            # ancestry editor cannot rebuild it. Show the generated text as-is.
+            if any(st.relation for st in sel.steps):
+                self._suppress_text = True
+                self.sel_text.setPlainText(sel.to_text())
+                self._suppress_text = False
+                self.statusBar().showMessage(
+                    "Anchored to a nearby element so this selector survives a reorder.", 8000)
+            else:
+                inc = sel.included or []
+                for i, st in enumerate(self.steps):
+                    st.include = i in inc
+                for pos, idx in enumerate(inc):
+                    if idx >= len(self.steps) or pos >= len(sel.steps):
+                        continue
+                    gst, m = sel.steps[pos], self.steps[idx]
+                    m.checked = {f.name for f in gst.filters}
+                    for f in gst.filters:
+                        m.ops[f.name] = f.op or "="
+                        m.values[f.name] = f.value
+                    m.nth = gst.nth
+                    m.use_role = gst.role != "*"
+                self._render_steps(select=len(self.steps) - 1)
+                self._render_selector(validate=False)
             self._show_result(res)
             self.code.setPlainText(code)
             self.plugins.emit("selector_validated", sel.to_text(), res)
@@ -834,6 +844,16 @@ class MainWindow(QMainWindow):
         else:
             txt, style = f"⚠  {n} matches - add attributes or an index", "status_warn"
         txt += f"   ·  {res.elapsed_ms:.0f} ms, {res.visited} elements visited"
+        try:
+            from ..core.resilience import grade
+            g = grade(self.selector_text())
+        except Exception:  # noqa: BLE001 - a syntax error is already reported above
+            g = None
+        if g is not None:
+            txt += f"   ·  {g.band} {g.score}"
+            self.valid_label.setToolTip("\n".join(g.reasons))
+        else:
+            self.valid_label.setToolTip("")
         self.valid_label.setText(txt)
         self.valid_label.setObjectName(style)
         self.valid_label.style().unpolish(self.valid_label)
@@ -855,25 +875,32 @@ class MainWindow(QMainWindow):
         def job():
             from ..core.selector import parse
             sel = parse(text)
-            tried = []
             for si in range(len(sel.steps) - 1, -1, -1):
                 st = sel.steps[si]
                 for fi in range(len(st.filters) - 1, -1, -1):
-                    st2 = Selector([Step(s.role, list(s.filters), s.nth, s.visible, s.deep, s.tech)
+                    st2 = Selector([Step(s.role, list(s.filters), s.nth, s.visible, s.deep, s.tech, s.relation)
                                     for s in sel.steps])
                     st2.steps[si].filters.pop(fi)
                     res = self.service.engine.find_all(st2, timeout=5)
-                    tried.append(st2.to_text())
                     if len(res.matches) == 1:
-                        return st2.to_text(), res
-            return None, None
+                        return st2.to_text(), res, ""
+            hit = self.service.engine.heal(text, hint=self.current, timeout=6)
+            if hit is None:
+                return None, None, ""
+            res = self.service.engine.find_all(hit.selector, timeout=5)
+            if len(res.matches) != 1:
+                return None, None, ""
+            note = f"Self-healed ({hit.confidence:.0%}). {hit.why}"
+            return hit.selector, res, note
 
         def done(r):
-            fixed, res = r
+            fixed, res, note = r
             if not fixed:
-                QMessageBox.information(self, "Repair", "Could not find a single element by dropping one "
-                                        "attribute. Pick the element again to regenerate the selector.")
+                QMessageBox.information(self, "Repair", "Could not repair this selector by relaxing it or by "
+                                        "matching a similar element. Pick the element again.")
                 return
+            if note:
+                self.statusBar().showMessage(note, 8000)
             self._suppress_text = True
             self.sel_text.setPlainText(fixed)
             self._suppress_text = False
@@ -1243,12 +1270,19 @@ class MainWindow(QMainWindow):
         """Runs on the driver thread. The Spectra selector and API are built in; everything else
         (Playwright, Selenium, Robot Framework, pywinauto, other formats...) comes from plugins."""
         text = sel.to_text()
-        lines = ["# Spectra selector", text, "",
-                 "# Python, with the Spectra API (spectra/api.py)",
-                 "from spectra.api import Spectra",
-                 "s = Spectra(" + ("browser_port=%d" % node.page.endpoint.port if node.tech == "web" else "") + ")",
-                 f"el = s.find(r'''{text}''', timeout=10)",
-                 "el.click()", ""]
+        try:
+            from ..core.resilience import grade
+            g = grade(sel)
+            quality = [f"# Selector quality: {g.summary()}"] + [f"# {reason}" for reason in g.reasons[:4]]
+        except Exception:  # noqa: BLE001
+            quality = []
+        lines = quality + [
+            "", "# Spectra selector", text, "",
+            "# Python, with the Spectra API (spectra/api.py)",
+            "from spectra.api import Spectra",
+            "s = Spectra(" + ("browser_port=%d" % node.page.endpoint.port if node.tech == "web" else "") + ")",
+            f"el = s.find(r'''{text}''', timeout=10)",
+            "el.click()", ""]
         if node.tech == "web":
             from ..core.webpaths import css_path, xpath
             css, xp = css_path(node), xpath(node)

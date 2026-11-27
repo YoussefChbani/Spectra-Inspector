@@ -143,7 +143,7 @@ class MyFormat(SelectorFormat):
     def to_selector(self, text: str) -> Optional[Selector]: ...    # optional, return None if not supported
 ```
 
-`selector.steps` is a list of `Step(role, filters, nth, visible, deep, tech)`; each `Filter(name, op, value, case_insensitive)` has `has_wildcards` and `literal` helpers. `spectra.plugins.parse(text)` parses Spectra's own syntax.
+`selector.steps` is a list of `Step(role, filters, nth, visible, deep, tech, relation)`; `relation` is `below`, `above`, `left`, `right`, `near`, or None. Each `Filter(name, op, value, case_insensitive)` has `has_wildcards` and `literal` helpers. `spectra.plugins.parse(text)` parses Spectra's own syntax.
 
 ### `Node` and `Backend`
 
@@ -210,5 +210,6 @@ These ship with Spectra, are on by default, and are written against the same pub
 | pywinauto exporter | pywinauto (UIA back end) code for desktop elements |
 | XPath-like format (UIA) | `/Window[@Name='…']//Edit[@AutomationId='…']` notation for desktop selectors (output only) |
 | Accessibility summary | An *Accessibility summary* group in Properties: accessible name, role, keyboard focus, and warnings such as a button without a name |
+| Target quality | A *Target quality* group in Properties: how stable a handle this element has (test id, automation id, accessible name) and why |
 | Copy element as JSON | A *Copy as JSON* action (Ctrl+Shift+J) |
 | Python console | The **Python console** panel |

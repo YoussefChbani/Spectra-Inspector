@@ -14,6 +14,7 @@ Plugins and extensibility.
 * **View**, **Export** and **Plugins** menus. The Export menu copies the selected element as any exporter or selector format.
 * Built-in plugins: Playwright, Selenium and Robot Framework exporters; pywinauto exporter; an XPath-like format for desktop selectors; an *Accessibility summary* in Properties with simple warnings; a *Copy as JSON* action (Ctrl+Shift+J); and a **Python console** panel with `find()`, `find_all()`, `highlight()` and the selected element pre-loaded.
 * `examples/plugins/`: a minimal plugin and a pip-installable plugin template. `docs/plugins.md`: guide and API reference.
+* **Selector quality, anchors, self-healing and recording.** Four libraries under `spectra/core`: `resilience` grades a selector or an element (resilient, usable, fragile); `anchor` adds `/below/`, `/above/`, `/left/`, `/right/` and `/near/`, and the generator uses one instead of `:nth()` when the rectangles can tell the elements apart; `heal` rebuilds a selector that matches nothing from role, a similar name, and the selected element; `script` turns a series of elements into a Spectra Python script (`Spectra.recording()`). Live validation, Repair, the Locators & code tab and a Target quality property group use them. `grade_selector()` and `Spectra.heal()` expose the same behaviour to scripts.
 
 ### Changed
 

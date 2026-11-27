@@ -380,7 +380,7 @@ def builtins(home):
 def test_builtins_load_and_are_on(builtins):
     recs = builtins.records
     for pid in ("web_exporters", "pywinauto_exporter", "xpath_format", "accessibility_summary",
-                "copy_json_action", "python_console"):
+                "copy_json_action", "python_console", "target_quality"):
         assert pid in recs, pid
         assert recs[pid].enabled, (pid, recs[pid].error)
     assert ("python_console", "Python console") in builtins.host.panels

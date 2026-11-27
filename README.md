@@ -24,9 +24,9 @@ Spectra Inspector is a UI element inspector for Windows desktop, Java and web ap
 | Pick on screen | F3, hover, then click (the click is not passed to the app) or press Ctrl. Live highlight that is DPI-correct on mixed-scale monitors. Spectra minimizes while you pick. |
 | UI tree | Lazy and filterable. Desktop (UI Automation control or raw view), browsers (DOM) and Java apps side by side |
 | Properties | Every UIA property grouped by pattern; MSAA (LegacyIAccessible); Win32 (hwnd, class, styles, control id, process path); Java; HTML attributes, accessibility role and name, geometry |
-| Selectors | A readable language with wildcards, regex, contains/starts/ends, a case-insensitive flag, `:nth()` and `:visible` |
+| Selectors | A readable language with wildcards, regex, contains/starts/ends, a case-insensitive flag, `:nth()`, `:visible`, and anchors (`/below/`, `/above/`, `/left/`, `/right/`, `/near/`) |
 | Selector editor | Tick ancestry levels and attributes, change the match operator, edit values; live validation shows the match count, time and which step failed |
-| Repair | Drops one attribute at a time to find the element again |
+| Repair | Drops one attribute at a time, then self-heals by role and a similar name when that is not enough |
 | Web without an extension | DevTools protocol: live DOM, **shadow DOM and iframes crossed by `>>`**, in-page highlight, the browser's own click-to-inspect (F4), hover-pick (F3) |
 | Web outputs | Spectra selector, CSS and XPath (each checked against the page), Playwright and Selenium snippets |
 | Web without a debug port | UI Automation reads the browser's accessibility tree (roles, names, values) |
@@ -68,17 +68,19 @@ uia:Window[process="notepad.exe"][name="* - Notepad"] >> Document
 web:tab[host="github.com"] >> button[text="Sign in" i]
 web:tab[title*="Inbox"] >> iframe >> input[aria-label="Search"]
 java:frame[name="SwingSet2"] >> push-button[name="OK"]:nth(2)
+uia:Window[process="notepad.exe"] >> Text[name="Email"] /below/ Edit
 ```
 
 * A step has the form `role[attr op "value"]…:pseudo`. The first step may carry a technology prefix: `uia:` (default), `web:` or `java:`.
 * `>` means direct child. `>>` (or a space) means any descendant, and crosses shadow roots and iframes on web pages.
+* `/below/`, `/above/`, `/left/` and `/right/` mean the nearest element in that direction from the previous match, searched in the same window or tab. `/near/` is the nearest element within 96 pixels when it does not line up on an axis. These are not parent/child links: the target is usually a sibling of the landmark. Without `:nth()`, only the nearest match is used. `:nth(2)` is the second nearest. Elements need an on-screen rectangle; two elements on the same rectangle still use `:nth()`.
 * Operators: `=` equals, with `*` (any text) and `?` (one character) as wildcards, for example `[name="* - File Explorer"]`. Write `\*` or `\?` for a real star or question mark (generated selectors do this for you). `!=` is the opposite of `=`, `*=` contains, `^=` starts with, `$=` ends with, `~=` regex, and `?=` is an alias of `=`. Add ` i` before `]` to ignore case. `[attr]` means the attribute exists and isn't empty.
 * `:nth(N)` takes the N-th match (1-based; `-1` is the last). `:visible` keeps only elements with a non-empty on-screen rectangle.
 * UIA attributes: `name`, `automationid`, `class`, `process`, `framework`, `type`, `controlid`, `hwnd`, `helptext`, `ariarole`, `value`, `pid`.
 * Web attributes: any HTML attribute, plus `text` (visible text), `own-text` and `tag`. Tab attributes: `title`, `url`, `host`.
 * Java attributes: `name`, `description`, `virtualname`, `states`, `value`, `index`, `process`.
 
-Press **F1** in the app for the full syntax.
+Press **F1** in the app for the full syntax. The guide to scores, anchors, repair, and recording is [docs/README.md](docs/README.md).
 
 ## Browser inspection
 
@@ -102,10 +104,17 @@ from spectra.api import Spectra
 s = Spectra(browser_port=9222)          # leave out browser_port for desktop-only use
 s.find('uia:Window[process="notepad.exe"] >> Document').type_text("Hello")
 s.find('web:tab[host="example.com"] >> a').click()
+fixed = s.heal('uia:Window[process="notepad.exe"] >> Button[name="Sav"]')  # name changed
 
 for button in s.find_all('web:tab[title="Shop"] >> button[class="add"]'):
     print(button.name, button.rect)
+
+rec = s.recording()
+rec.click(fixed.element)
+print(rec.to_python())
 ```
+
+`grade_selector("button:nth(2)")` scores a selector as resilient, usable or fragile without starting the app. The same score is shown next to live validation and in the Locators & code tab. How to use the score, anchors, repair, and recording is in [docs/README.md](docs/README.md).
 
 `find` waits up to `timeout` seconds; elements offer `click`, `type_text`, `set_value`, `invoke`, `focus`, `get(attr)`, `rect` and `properties()`.
 
@@ -152,6 +161,10 @@ or `run_tests.bat`. The tests cover the selector language and generator, a live 
 ```
 spectra/core/selector.py   selector language: parser, serializer, matching
 spectra/core/engine.py     search (step by step, with budgets and timeouts) and selector generation
+spectra/core/resilience.py grades a selector or an element: resilient, usable or fragile
+spectra/core/anchor.py     relative selectors (/below/ and the others) and the generator's anchor choice
+spectra/core/heal.py       rebuilds a selector when the old one matches nothing
+spectra/core/script.py     turns a series of elements into a Spectra Python script
 spectra/core/webpaths.py   CSS / XPath generation
 spectra/backends/uia.py    UI Automation (comtypes, cached FindAll, native conditions)
 spectra/backends/win32.py  Win32 helpers (windows, processes, DPI, Chromium viewports, mouse hook)
@@ -167,7 +180,7 @@ spectra/plugin_manager.py  plugin discovery, loading, isolation and cleanup
 spectra/builtin_plugins/   plugins that ship with Spectra (exporters, console, ...)
 tests/                     unit tests, a live Chromium test and live Windows tests
 demo/                      a demo web page and the script that records the demo video
-docs/                      plugin guide (plugins.md) and README screenshots
+docs/                      guides (plugins.md, stable selectors in README.md) and screenshots
 examples/plugins/          a minimal plugin and a pip-installable plugin template
 ```
 
@@ -183,6 +196,7 @@ examples/plugins/          a minimal plugin and a pip-installable plugin templat
 
 * Cross-site iframes that run in a separate process aren't in the DOM tree yet. Same-site iframes and shadow DOM are.
 * Searching `>>` from the desktop root across every application can be slow. Start selectors with a window step (the generator always does).
+* `/below/` and the other anchors need each element to report a rectangle. When two elements share a rectangle, the generator keeps `:nth()`.
 * Java coordinates on high-DPI screens depend on the Java version's DPI awareness.
 * Not supported yet: SAP GUI scripting, Silverlight, the legacy IE engine and Citrix/RDP virtual channels.
 

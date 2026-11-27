@@ -5,9 +5,15 @@ A selector is a chain of *steps* joined by *combinators*::
     uia:Window[process="notepad.exe"][name$=" - Notepad"] >> Edit[automationid="15"]
     web:tab[host="github.com"] >> button[text="Sign in" i]
     java:frame[name="SwingSet"] >> push-button[name="OK"]:nth(2)
+    uia:Window[process="notepad.exe"] >> Text[name="Email"] /below/ Edit
 
 Step syntax:   [tech ":"] role-or-* filter* pseudo*
 Combinators:   ">"  direct child          ">>" (or whitespace) any descendant
+               /below/ /above/ /left/ /right/ /near/
+                   the nearest element in that direction from the previous match,
+                   searched in the same window or tab (not only its children).
+                   Without :nth(), only the nearest is used. :nth(2) is the
+                   second nearest. These need an on-screen rectangle.
 Filters:       [attr]            attribute exists and is not empty
                [attr = "v"]      equals; * (any run) and ? (one character) are wildcards:
                                  [name="* - Notepad"]. Write \* or \? for a real star / question mark
@@ -147,6 +153,7 @@ class Step:
     visible: bool = False
     deep: bool = False  # combinator *before* this step: True = descendant, False = child
     tech: Optional[str] = None  # only meaningful on the first step
+    relation: Optional[str] = None  # below/above/left/right/near, instead of > or >>
 
     def role_matches(self, role: str) -> bool:
         return self.role == "*" or self.role.casefold() == (role or "").casefold()
@@ -177,6 +184,8 @@ class Selector:
             if i == 0:
                 prefix = ">> " if st.deep else ""
                 parts.append(f"{prefix}{self.tech}:{txt}")
+            elif st.relation:
+                parts.append(f"/{st.relation}/ {txt}")
             else:
                 parts.append((">> " if st.deep else "> ") + txt)
         return " ".join(parts)
@@ -344,12 +353,30 @@ class _Parser:
             return
         self.error(f"unknown pseudo ':{name}'")
 
+    def _combinator(self, had_ws: bool):
+        """Consume the combinator before the next step. Returns (deep, relation)."""
+        if self.s.startswith(">>", self.i):
+            self.i += 2
+            return True, None
+        if self.peek() == ">":
+            self.i += 1
+            return False, None
+        if self.peek() == "/":
+            m = re.match(r"/(below|above|left|right|near)/", self.s[self.i:], re.I)
+            if not m:
+                self.error("expected /below/, /above/, /left/, /right/ or /near/")
+            self.i += m.end()
+            return False, m.group(1).lower()
+        if had_ws:
+            return True, None
+        self.error("unexpected character")
+
     def parse(self) -> Selector:
         steps: List[Step] = []
         self.ws()
         if self.eof():
             self.error("empty selector")
-        deep = False
+        deep, relation = False, None
         if self.s.startswith(">>", self.i):
             deep = True
             self.i += 2
@@ -357,23 +384,17 @@ class _Parser:
         elif self.peek() == ">":
             self.i += 1
             self.ws()
+        elif self.peek() == "/":
+            self.error("a relation needs an element before it")
         while True:
             st = self.step(first=not steps)
             st.deep = deep
+            st.relation = relation
             steps.append(st)
             had_ws = self.ws()
             if self.eof():
                 break
-            if self.s.startswith(">>", self.i):
-                deep = True
-                self.i += 2
-            elif self.peek() == ">":
-                deep = False
-                self.i += 1
-            elif had_ws:
-                deep = True
-            else:
-                self.error("unexpected character")
+            deep, relation = self._combinator(had_ws)
             self.ws()
             if self.eof():
                 self.error("selector ends with a combinator")

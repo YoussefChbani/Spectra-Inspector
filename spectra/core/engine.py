@@ -69,6 +69,14 @@ class Engine:
             out = [out[i]] if 0 <= i < len(out) else []
         return out
 
+    def _by_relation(self, landmark: Node, step: Step, budget: Budget) -> List[Node]:
+        """Nearest elements in ``step.relation`` to ``landmark``, inside its window."""
+        from .anchor import nearest_matches
+        chain = landmark.ancestry()
+        root = chain[0] if chain else landmark
+        pool = [n for n in walk(root, budget) if n != landmark and step_matches(step, n)]
+        return nearest_matches(landmark, pool, step.relation, step.nth)
+
     def run(self, selector, timeout: float = 10.0, root: Optional[Node] = None,
             stop_after_step: Optional[int] = None) -> Tuple[SearchResult, List[List[Node]]]:
         """Run a selector. Returns the result and, per step, the list of
@@ -86,8 +94,12 @@ class Engine:
                 contexts_per_step.append(current)
                 nxt: List[Node] = []
                 seen = set()
-                for ctx in current:
-                    for n in self._step_candidates(ctx, step, budget):
+                if step.relation:
+                    sources = ((landmark, self._by_relation(landmark, step, budget)) for landmark in current)
+                else:
+                    sources = ((ctx, self._step_candidates(ctx, step, budget)) for ctx in current)
+                for _, found in sources:
+                    for n in found:
                         k = (n.tech, n.key())
                         if k not in seen:
                             seen.add(k)
@@ -127,7 +139,9 @@ class Engine:
         Strategy: the top-level ancestor plus the target; while that is
         ambiguous, add the nearest ancestor that carries a strong identifier;
         then fall back to :nth() on the target step; and if attributes do not
-        even reach the target, emit a full child-by-child path.
+        even reach the target, emit a full child-by-child path. When :nth()
+        was required and the elements have rectangles, a relative selector
+        (``/below/`` and the others) replaces the index if it is at least as stable.
         """
         chain = target.ancestry()
         tech = target.tech
@@ -179,7 +193,37 @@ class Engine:
             sel = self._full_path(chain)
             sel.included = list(range(len(chain)))
             res = self.find_all(sel, max(2.0, deadline - time.monotonic()))
+        anchored = self._prefer_anchor(target, sel, res, deadline)
+        if anchored is not None:
+            return anchored
         return sel, res
+
+    def _prefer_anchor(self, target: Node, sel: Selector, res: SearchResult, deadline: float):
+        """Use a relative selector when :nth() was the only way to be unique."""
+        if time.monotonic() >= deadline:
+            return None
+        if res.error or res.matches != [target]:
+            return None
+        if not sel.steps or sel.steps[-1].nth is None or sel.steps[0].nth is not None:
+            return None
+        from .anchor import propose_anchor
+        from .resilience import grade
+        alt = propose_anchor(self, target)
+        if alt is None:
+            return None
+        alt_res = self.find_all(alt, max(1.0, min(3.0, deadline - time.monotonic())))
+        if alt_res.error or alt_res.matches != [target]:
+            return None
+        new, old = grade(alt), grade(sel)
+        if new.score > old.score or (new.score == old.score and sel.steps[-1].nth is not None):
+            alt.included = None
+            return alt, alt_res
+        return None
+
+    def heal(self, selector, hint: Optional[Node] = None, timeout: float = 6.0):
+        """A replacement for a selector that matches nothing. See :mod:`spectra.core.heal`."""
+        from .heal import heal
+        return heal(self, selector, hint=hint, timeout=timeout)
 
     def _pick_anchor(self, chain, included, tried) -> Optional[int]:
         best, best_score = None, 0
